@@ -1,0 +1,19 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Secrets — never commit this
+.env
+.env.*
+!.env.example
+
+# Node (an unrelated package.json/lucide-react ended up in backend/ — ignore
+# node_modules here regardless)
+node_modules/

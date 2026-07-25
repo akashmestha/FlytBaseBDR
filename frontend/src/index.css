@@ -1,0 +1,42 @@
+@import "tailwindcss";
+
+:root {
+  --flyt-bg: #f7f2e8;
+  --flyt-card: #fffdf6;
+  --flyt-blue: #2a9df4;
+  --flyt-green: #0b7a33;
+  --flyt-yellow: #f4c400;
+  --flyt-text: #222;
+}
+
+body {
+  background: var(--flyt-bg);
+
+  /* graph paper background */
+  background-image:
+      linear-gradient(rgba(0,0,0,.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,0,0,.05) 1px, transparent 1px);
+
+  background-size:32px 32px;
+
+  font-family:"IBM Plex Mono",monospace;
+}
+
+.pixel{
+    font-family:"Press Start 2P",cursive;
+}
+
+.flyt-card{
+    background:var(--flyt-card);
+    border:2px solid var(--flyt-blue);
+}
+
+.flyt-button{
+    background:var(--flyt-yellow);
+    border:2px solid black;
+    transition:.2s;
+}
+
+.flyt-button:hover{
+    transform:translateY(-2px);
+}
