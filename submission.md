@@ -1,137 +1,124 @@
-# FlytBase BDR Agent — Submission
+# submission
 
 ## What I built
 
-An AI-powered outbound sales intelligence tool for FlytBase's BDR (Business
-Development Rep) team. You give it a target vertical and one reference
-company (e.g. _"mining" / "Rio Tinto"_), and it runs a five-stage agent
-pipeline that:
+An outbound BDR (Business Development Rep) automation tool. Given a
+target vertical and one reference company, it runs a five-stage agent
+pipeline that identifies an Ideal Customer Profile, discovers real
+companies matching it, researches each one, finds verified
+decision-makers, and drafts a personalized cold email per contact —
+producing a ready-to-review prospect list instead of a BDR building one
+by hand.
 
-1. Defines the Ideal Customer Profile (ICP) for that vertical
-2. Finds real companies that match it
-3. Researches each company's recent initiatives, digital transformation
-   efforts, and ESG activity
-4. Finds real decision-makers at each company (with verified LinkedIn URLs)
-5. Drafts a personalized cold email per contact, grounded in that research
+Backend: FastAPI (Python), orchestrating five agents backed by Gemini
+(with a Groq fallback) for generation and Tavily for web search.
+Frontend: React/Vite, submitting a campaign and rendering the returned
+research, contacts, and draft emails per company.
 
-The output is a ready-to-review target list with sourced research and
-draft outreach — the multi-hour manual version of a BDR's "build me a
-prospect list" task, compressed into one request.
+## Architecture / Flow
 
-## Why a multi-agent pipeline instead of one big prompt
+```mermaid
+flowchart TD
+    A[User input: vertical + reference company] --> B[ICP Agent - Gemini]
+    B --> C[Account Discovery Agent - Tavily search + Gemini]
+    C --> D{Companies found?}
+    D -- No --> D1[Campaign fails: no companies found]
+    D -- Yes --> E[Loop: one pass per discovered company]
+    E --> F[Research Agent - Tavily search + Gemini]
+    F --> G[Contact Agent - LinkedIn-biased Tavily search + Gemini]
+    G --> H{Verified contacts found?}
+    H -- No --> H1[Skip email generation for this company]
+    H -- Yes --> I[Email Agent - Gemini]
+    I --> J[One personalized email per verified contact]
+    H1 --> K[Company result: research + contacts, no emails]
+    J --> K2[Company result: research + contacts + emails]
+    K --> L[Aggregate results across all companies]
+    K2 --> L
+    L --> M[Campaign JSON returned to frontend]
 
-Each stage needs a different kind of grounding:
-
-- ICP definition is pure reasoning — no search needed.
-- Account discovery and research both need **current, real web results**
-  (an LLM alone will happily invent plausible-sounding companies).
-- Contact and email generation need **hard guardrails against
-  fabrication** — inventing a name, title, or LinkedIn URL is worse than
-  returning nothing, because it looks credible until someone acts on it.
-
-Splitting these into separate agents means each one gets exactly the
-context and constraints it needs, and a failure in one stage (bad JSON
-back from the model, a search that returns nothing) doesn't have to
-corrupt the others.
-
-## Architecture
-
-```
-React/Vite frontend
-        │  POST /campaign/run { vertical, reference_company }
-        ▼
-FastAPI backend
-        │
-        ▼
-   Orchestrator ── loops per discovered company, isolates failures
-        │
-        ├─ 1. ICP Agent          (Gemini)
-        ├─ 2. Account Agent      (Tavily search → Gemini)
-        ├─ 3. Research Agent     (Tavily search → Gemini)   ─┐
-        ├─ 4. Contact Agent      (Tavily search → Gemini)    ├─ per company
-        └─ 5. Email Agent        (Gemini)                   ─┘
+    N[Gemini generation] -. daily quota exhausted .-> O[Groq fallback]
+    E -. per-company try/except .-> P[One company's failure does not stop the others]
 ```
 
-## The pipeline, stage by stage
+**Note on this diagram:** this reflects what the codebase actually
+implements — a linear per-company pipeline with two explicit guardrails
+(skip email generation with no verified contacts; isolate failures
+per-company) and one reliability fallback (Gemini to Groq). I did not
+get confirmation from the participant on whether anything here should be
+represented differently (parallel stages, additional decision points,
+or a different data handoff) — if the real design intent differs from
+what's shown, this diagram should be corrected before final submission.
 
-**1. ICP Agent** — Takes the vertical + reference company and asks Gemini
-to return a structured ICP (industry, company size, regions, keywords,
-must-have characteristics) as strict JSON. No search — this is a
-reasoning step.
+## Why this solves the brief
 
-**2. Account Discovery Agent** — Builds a short, targeted Tavily query
-from the ICP (industry + reference company + top region — not the whole
-ICP object, since Tavily caps queries at 400 characters), then asks
-Gemini to extract up to 5 real matching companies from the search
-results, with a one-line "why this matches" for each.
+_I don't have the assignment PDF (`FlytBase_Outbound_BDR_-_Hackathon_Problem_Statement.pdf`) in this session, so this section is based on the general outbound-BDR framing implied by the codebase itself, not a line-by-line match against the brief's stated requirements. If the brief specifies criteria not covered here, add them._
 
-**3. Research Agent** — For each discovered company, runs a targeted
-search (recent initiatives, digital transformation, drone inspection,
-safety, ESG, 2025/2026) and has Gemini summarize it into a structured
-brief: summary, recent initiatives, digital transformation signals, ESG
-activity, operational challenges, and interesting facts — each field a
-list of short, plain-string facts so downstream stages can consume it
-predictably.
+The core outbound BDR workflow — figure out who to sell to, find real
+companies that fit, research them, find the right people, and write a
+relevant first outreach — is broken into five discrete agents rather
+than one large prompt, so each step can be grounded in real search
+results where accuracy matters (which companies exist, who actually
+works there) and reasoned freely where it doesn't (defining an ICP).
+Two explicit guardrails — never inventing a LinkedIn URL, never writing
+an email against a fabricated contact — are enforced in code, not just
+prompted for.
 
-**4. Contact Agent** — Runs a `site:linkedin.com/in` biased search for
-decision-makers ("Head of Operations", "VP", "Director") at the company.
-Critically, the LinkedIn URL is only ever filled in if it matches an
-actual URL from the search results — the model is explicitly instructed
-to leave it blank rather than guess, so we never hand a BDR a fabricated
-profile link.
+## Evidence from the codebase
 
-**5. Email Agent** — Drafts one personalized email per verified contact,
-grounded in the research brief and the contact's specific role, under
-150 words, professional tone. **If contact discovery found zero verified
-contacts, this stage is skipped entirely** rather than asked to
-"personalize" against an invented persona — a deliberate design choice
-to keep fabricated outreach out of the product.
+- `backend/app/agents/orchestrator.py` — drives the per-company loop and
+  isolates failures with try/except so one company's error doesn't
+  drop the others from the campaign.
+- `backend/app/agents/icp_agent.py` — defines the ICP via a single
+  schema-constrained Gemini call.
+- `backend/app/agents/account_agent.py` — builds a Tavily query from the
+  ICP, extracts up to 5 real candidate companies from search results.
+- `backend/app/agents/research_agent.py` — per-company search + Gemini
+  summarization into a fixed schema (summary, initiatives, digital
+  transformation, ESG, operational challenges, interesting facts).
+- `backend/app/agents/contact_agent.py` — LinkedIn-biased search; only
+  fills a contact's `linkedin` field if it matches an actual result URL,
+  explicitly instructed never to guess one.
+- `backend/app/agents/email_agent.py` — returns `{"emails": []}` and
+  skips generation entirely when `contacts` is empty, specifically to
+  avoid writing an email against an invented persona.
+- `backend/app/services/llm.py` — Gemini-primary/Groq-fallback logic,
+  distinguishing per-minute rate limits (retry with backoff) from daily
+  quota exhaustion (fail over to Groq immediately).
+- `backend/app/services/search.py` — Tavily wrapper that returns an
+  empty result set on failure instead of raising.
+- `backend/app/routes/campaign.py` + `backend/app/main.py` — the single
+  `POST /campaign/run` endpoint and FastAPI app wiring the above
+  together.
 
-## Reliability decisions worth calling out
+## Demo / results
 
-- **LLM fallback:** Gemini is primary, with automatic fallback to Groq
-  (OpenAI-compatible API) if Gemini's _daily_ quota is exhausted. The
-  code distinguishes per-minute rate limits (worth retrying with
-  backoff) from per-day quota exhaustion (not worth retrying — fail
-  fast to Groq instead).
-- **Per-company error isolation:** the orchestrator wraps each company's
-  research/contacts/email stages in a try/except. One company's failure
-  (bad JSON, exhausted retries, network blip) doesn't take down the
-  whole campaign — it's recorded on that company's entry and the run
-  continues.
-- **Defensive search wrapper:** a single flaky Tavily call returns an
-  empty result set instead of raising, so callers never need extra
-  None-checks.
-- **Schema-shaped generation:** Gemini's JSON mode is used throughout
-  instead of asking the model to "return JSON" in prose and hoping —
-  this removes an entire class of fence-stripping/parsing bugs.
+**Placeholder — needs participant input.** I have not been given a
+confirmed real run to report on. Before submitting, replace this section
+with:
 
-## Tech stack
+- The vertical + reference company you tested with
+- How many companies / contacts / emails the run actually returned
+- Any notable behavior observed (e.g. a company where contact discovery
+  came back empty and email generation correctly skipped it)
 
-| Layer            | Choice                                                                |
-| ---------------- | --------------------------------------------------------------------- |
-| Backend          | FastAPI (Python 3.14), `uv` for dependency management                 |
-| LLM              | Gemini (`gemini-3.6-flash`), Groq (`openai/gpt-oss-120b`) as fallback |
-| Search           | Tavily                                                                |
-| Frontend         | React 19 + Vite 8 + Tailwind 4                                        |
-| Backend hosting  | Render                                                                |
-| Frontend hosting | Vercel                                                                |
+`frontend/src/mock/results.js` contains an "Antofagasta Minerals"
+example, but this was built as UI fixture data before the backend
+existed — it is **not** included here as a real result since that
+wasn't confirmed.
 
-## Deployment
+## Notes and limitations
 
-- **Live app:** `https://flyt-base-bdr.vercel.app/`
-- **Backend health check:** https://flytbasebdr.onrender.com/health
-- **Repo:** https://github.com/akashmestha/FlytBaseBDR
-
-## Known limitations / what I'd do next with more time
-
-- `/campaign/run` is synchronous and can take well over a minute for
-  multiple companies — in a real production version I'd make it return
-  a job ID immediately and poll for results, both for UX and to avoid
-  hosting-provider request timeouts.
-- No auth/rate limiting on the endpoint — fine for a hackathon demo,
-  not for a public link left running indefinitely.
-- No persistence — every run is stateless; a real version would store
-  campaigns so a BDR could revisit past prospect lists.
-- Free-tier hosting means the backend cold-starts after inactivity
-  (~50s+ delay on the first request after idle).
+- The account discovery step caps results at 5 companies per campaign
+  (`account_agent.py`), so the pipeline is scoped to a small, reviewable
+  batch rather than broad-net prospecting.
+- Contact discovery relies on a `site:linkedin.com/in` search pattern;
+  companies with a limited public LinkedIn footprint may return few or
+  no verified contacts, which correctly results in no email for that
+  company rather than a fabricated one.
+- Research quality depends on what Tavily surfaces for a given company
+  in the current search window — a company with little recent public
+  coverage will get a thinner research brief.
+- The LLM fallback (Gemini → Groq) only triggers on daily quota
+  exhaustion, not on every error type — a genuine bad-request or
+  malformed-JSON error from Gemini is raised rather than silently
+  retried on Groq.
